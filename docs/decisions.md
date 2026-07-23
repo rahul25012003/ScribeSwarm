@@ -59,3 +59,28 @@ authority, so it must trace to a fetched quote. Rejections are logged to
 the run notes. We lose arbitrary analysis flexibility; we gain structural
 safety and claim-traceable charts, consistent with the ledger philosophy.
 Revisit (sandboxed python_exec tool) when Docker lands.
+
+## ADR-006: Single-file static UI served by FastAPI, not Next.js
+**Date:** 2026-07-23 · **Status:** accepted
+
+The master plan sketches a Next.js UI. LexRAG proved the pattern that fits
+this stack better: one dependency-free static HTML file served by the same
+FastAPI process — no node toolchain, no build step, nothing to deploy
+separately. Every planned capability survives: live agent timeline (SSE),
+plan editor at the interrupt gate, report viewer, checkpoint replay. If the
+UI ever needs real componentization (Phase-8 product work), that's the
+moment for a frontend framework — not before.
+
+## ADR-007: Config-comparison evals over a fixed benchmark, self-judged
+**Date:** 2026-07-23 · **Status:** accepted
+
+Agent quality claims need numbers, so Phase 6 ships a 10-question benchmark
+run under named configurations (multi-agent ± fact-checker, single-section
+baseline) with two metric families: STRUCTURAL metrics computed in code
+(citation validity — do prose markers exist in the ledger; sourced-claim
+ratio; verdict counts; llm/tool calls; wall time) and RUBRIC scores from an
+LLM judge (coverage, structure, factuality). Caveat recorded openly: with
+one free-tier Gemini key the judge is the same model family as the writer —
+self-judging bias is real, so structural metrics lead and rubric scores are
+directional. Cost optimization on a single free model = call-count
+engineering, measured by the config ablation, not model-tier routing.

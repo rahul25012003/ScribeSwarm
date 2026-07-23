@@ -156,6 +156,9 @@ def _mock(system: str, user: str) -> str:
         return _mock_critic(user)
     if role == "WRITER":
         return _mock_draft(user)
+    if role == "JUDGE":
+        return json.dumps({"coverage": 3, "structure": 4, "factuality": 4,
+                           "rationale": "deterministic mock judgement"})
     return "mock reply"
 
 
