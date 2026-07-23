@@ -150,6 +150,10 @@ def _mock(system: str, user: str) -> str:
         return _mock_extract(user)
     if role == "VERIFIER":
         return _mock_verify(user)
+    if role == "ANALYST":
+        return _mock_analyst(user)
+    if role == "CRITIC":
+        return _mock_critic(user)
     if role == "WRITER":
         return _mock_draft(user)
     return "mock reply"
@@ -200,6 +204,41 @@ def _mock_verify(user: str) -> str:
     return json.dumps({"status": "corroborated",
                        "reason": "mock corroboration",
                        "counter_quote": ""})
+
+
+def _mock_analyst(user: str) -> str:
+    """Build one bar chart from up to three claims that contain a number."""
+    rows = re.findall(r"\[(\S+)\] \((\S+)\) (.+)", user)
+    points = []
+    for cid, sid, text in rows:
+        num = re.search(r"\d+(?:\.\d+)?", text)
+        if num:
+            points.append((cid, sid, float(num.group(0))))
+        if len(points) == 3:
+            break
+    if not points:
+        return "[]"
+    return json.dumps([{
+        "section_id": points[0][1],
+        "title": "Key figures from the claim ledger",
+        "kind": "bar",
+        "x": [p[0] for p in points],
+        "y": [p[2] for p in points],
+        "y_label": "value",
+        "claim_ids": [p[0] for p in points],
+    }])
+
+
+def _mock_critic(user: str) -> str:
+    cited = bool(re.search(r"\[[A-Za-z0-9_]*c\d+\]", user))
+    if cited:
+        return json.dumps({"verdict": "accept", "notes": "",
+                           "scores": {"citation_density": 4, "structure": 4,
+                                      "hedging": 4, "consistency": 4}})
+    return json.dumps({"verdict": "revise",
+                       "notes": "No inline [id] citations — cite the claims.",
+                       "scores": {"citation_density": 0, "structure": 3,
+                                  "hedging": 3, "consistency": 3}})
 
 
 def _mock_draft(user: str) -> str:

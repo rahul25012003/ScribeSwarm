@@ -50,16 +50,28 @@ def run(question: str,
     state = run_graph(question, thread_id, budget=budget)
     elapsed = time.perf_counter() - t0
 
-    out = _runs_dir() / f"{thread_id}.md"
-    out.write_text(state.get("report", ""), encoding="utf-8")
+    run_dir = _runs_dir() / thread_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    report_md = state.get("report", "")
+    (run_dir / "report.md").write_text(report_md, encoding="utf-8")
+
+    from scribeswarm.charts import render_chart, render_html
+
+    for spec in state.get("charts", []):
+        render_chart(spec, run_dir / "charts" / f"{spec['id']}.png")
+    title = (state.get("plan") or {}).get("title", "ScribeSwarm report")
+    render_html(report_md, run_dir / "charts", run_dir / "report.html", title)
+
     typer.echo(
         f"done in {elapsed:.1f}s — provider={state.get('provider')} "
         f"llm_calls={state.get('llm_calls')} tool_calls={state.get('tool_calls', 0)} "
-        f"claims={len(state.get('claims', []))}"
+        f"claims={len(state.get('claims', []))} charts={len(state.get('charts', []))} "
+        f"revised={sum(1 for d in state.get('drafts', []) if d.get('revised'))}"
     )
     for event in state.get("budget_events", []):
-        typer.echo(f"  budget: {event}")
-    typer.echo(f"report: {out}")
+        typer.echo(f"  note: {event}")
+    typer.echo(f"report: {run_dir / 'report.md'}")
+    typer.echo(f"html:   {run_dir / 'report.html'}")
 
 
 @app.command()
@@ -82,7 +94,7 @@ def state(thread: str):
 
 @app.command()
 def report(thread: str):
-    path = _runs_dir() / f"{thread}.md"
+    path = _runs_dir() / thread / "report.md"
     if not path.exists():
         typer.echo("no saved report for this thread")
         raise typer.Exit(1)

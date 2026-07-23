@@ -67,13 +67,21 @@ def build_graph(checkpointer: SqliteSaver):
     builder.add_node("verify_gate", nodes.verify_gate)
     builder.add_node("fact_check_section", nodes.fact_check_section)
     builder.add_node("writer", nodes.writer)
+    builder.add_node("analyst", nodes.analyst)
+    builder.add_node("critic", nodes.critic)
+    builder.add_node("reviser", nodes.reviser)
+    builder.add_node("assemble", nodes.assemble)
     builder.add_edge(START, "planner")
     builder.add_conditional_edges("planner", _fan_out, ["research_section"])
     builder.add_edge("research_section", "verify_gate")
     builder.add_conditional_edges(
         "verify_gate", _fan_out_verify, ["fact_check_section", "writer"])
     builder.add_edge("fact_check_section", "writer")
-    builder.add_edge("writer", END)
+    builder.add_edge("writer", "analyst")
+    builder.add_edge("analyst", "critic")
+    builder.add_edge("critic", "reviser")
+    builder.add_edge("reviser", "assemble")
+    builder.add_edge("assemble", END)
     return builder.compile(checkpointer=checkpointer)
 
 

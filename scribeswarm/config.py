@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     verify_claims: bool = True
     max_verify_per_section: int = 3  # highest-confidence claims re-checked
 
+    # Analyst + critic (Phase 4)
+    max_charts: int = 2              # chart specs accepted per run
+    critic_enabled: bool = True      # rubric review + one revision pass
+
     # LLM
     llm_provider: str = "auto"    # auto | anthropic | openai | gemini | mock
     anthropic_model: str = "claude-opus-4-8"

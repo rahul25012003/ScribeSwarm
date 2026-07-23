@@ -43,6 +43,7 @@ class SectionDraft(BaseModel):
     heading: str
     markdown: str
     cited_claim_ids: list[str] = Field(default_factory=list)
+    revised: bool = False    # True when the critic sent it back once (Phase 4)
 
 
 class RunState(TypedDict, total=False):
@@ -67,3 +68,6 @@ class RunState(TypedDict, total=False):
     # folds them over the ledger (claims channel itself is append-only):
     # {claim_id, status, reason, counter_url, counter_quote}
     verdicts: Annotated[list[dict], operator.add]
+    # Phase 4 (single-writer keys, plain overwrite):
+    charts: list[dict]     # validated chart specs {id, section_id, title, kind, x, y, claim_ids}
+    critiques: list[dict]  # {section_id, verdict, notes, scores}

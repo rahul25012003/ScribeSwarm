@@ -75,6 +75,27 @@ WRITER_SYSTEM = (
     "paragraphs."
 )
 
+ANALYST_SYSTEM = (
+    "You are the ANALYST. From the numbered claims provided, propose charts "
+    "ONLY where claims contain comparable numbers. Reply with ONLY a valid "
+    'JSON array (possibly empty): [{"section_id": str, "title": str, '
+    '"kind": "bar"|"line", "x": [labels], "y": [numbers], "y_label": str, '
+    '"claim_ids": [ids of the claims the numbers come from]}]. Never invent '
+    "numbers that are not in a claim. No prose, no fences."
+)
+
+CRITIC_SYSTEM = (
+    "You are the CRITIC. Review one report section draft against this "
+    "rubric, scoring 0-5 each: citation_density (facts carry [id] markers), "
+    "structure (clear, no filler), hedging (uncertain things hedged, "
+    "certain things not over-hedged), consistency (no internal "
+    "contradictions). Verdict revise only for real defects fixable by "
+    "rewriting. Reply with ONLY valid JSON: "
+    '{"verdict": "accept"|"revise", "notes": str, "scores": {"citation_density": '
+    'int, "structure": int, "hedging": int, "consistency": int}}. '
+    "No prose, no fences."
+)
+
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
@@ -271,9 +292,11 @@ def fact_check_section(payload: dict) -> RunState:
 
 
 CITABLE = ("corroborated", "contested", "unverified")
+TRUSTED_FOR_CHARTS = ("corroborated", "unverified")
 
 
-def writer(state: RunState) -> RunState:
+def resolved_claims(state: RunState) -> list[Claim]:
+    """Ledger in deterministic order with fact-check verdicts folded in."""
     plan = ResearchPlan.model_validate(state["plan"])
     order = {s.id: i for i, s in enumerate(plan.sections)}
     vmap = {v["claim_id"]: v for v in state.get("verdicts", [])}
@@ -282,40 +305,141 @@ def writer(state: RunState) -> RunState:
         key=lambda c: (order.get(c.section_id, 99),
                        int(re.sub(r"\D", "", c.id[len(c.section_id):]) or 0)),
     )
-    for c in claims:                      # fold verdict events over the ledger
+    for c in claims:
         if c.id in vmap:
             c.status = vmap[c.id]["status"]
+    return claims
 
+
+def _write_section(section: PlanSection, citable: list[Claim],
+                   critic_notes: str = "") -> SectionDraft:
+    listing = "\n".join(
+        f"[{c.id}]{' (CONTESTED)' if c.status == 'contested' else ''} {c.text}"
+        for c in citable)
+    user = f"## {section.heading}\nClaims you may cite:\n{listing}"
+    if critic_notes:
+        user += ("\n\nA reviewer rejected the previous draft. Fix exactly "
+                 f"these issues:\n{critic_notes}")
+    raw = generate(WRITER_SYSTEM, user)
+    return SectionDraft(
+        section_id=section.id,
+        heading=section.heading,
+        markdown=raw.strip(),
+        cited_claim_ids=[c.id for c in citable if f"[{c.id}]" in raw],
+        revised=bool(critic_notes),
+    )
+
+
+def writer(state: RunState) -> RunState:
+    plan = ResearchPlan.model_validate(state["plan"])
+    claims = resolved_claims(state)
     drafts: list[dict] = []
     calls = 0
     for section in plan.sections:
         citable = [c for c in claims
                    if c.section_id == section.id and c.status in CITABLE]
-        listing = "\n".join(
-            f"[{c.id}]{' (CONTESTED)' if c.status == 'contested' else ''} {c.text}"
-            for c in citable)
-        raw = generate(
-            WRITER_SYSTEM,
-            f"## {section.heading}\nClaims you may cite:\n{listing}",
-        )
+        drafts.append(_write_section(section, citable).model_dump())
         calls += 1
-        drafts.append(SectionDraft(
-            section_id=section.id,
-            heading=section.heading,
-            markdown=raw.strip(),
-            cited_claim_ids=[c.id for c in citable if f"[{c.id}]" in raw],
-        ).model_dump())
-    return {
-        "drafts": drafts,
-        "report": _assemble(plan, drafts, claims, vmap,
-                            state.get("budget_events", [])),
-        "llm_calls": calls,
-    }
+    return {"drafts": drafts, "llm_calls": calls}
+
+
+def analyst(state: RunState) -> RunState:
+    """Propose charts from numeric, trustworthy claims — spec-driven, never
+    code (ADR-005). Invalid specs are dropped with a logged reason."""
+    from scribeswarm.charts import validate_spec
+
+    claims = [c for c in resolved_claims(state)
+              if c.status in TRUSTED_FOR_CHARTS
+              and c.source_type != "model_prior"     # charts imply authority:
+              and re.search(r"\d", c.text)]          # sourced numbers only
+    if not claims:
+        return {"charts": []}
+    listing = "\n".join(f"[{c.id}] ({c.section_id}) {c.text}" for c in claims)
+    raw = generate(ANALYST_SYSTEM, f"Numbered claims:\n{listing}")
+    try:
+        specs = extract_json(raw)
+    except ValueError:
+        return {"charts": [], "llm_calls": 1,
+                "budget_events": ["analyst reply unparseable — no charts"]}
+    valid_ids = {c.id for c in claims}
+    charts: list[dict] = []
+    events: list[str] = []
+    for spec in (specs if isinstance(specs, list) else []):
+        if len(charts) >= settings.max_charts:
+            events.append("chart cap reached — extra specs dropped")
+            break
+        reason = validate_spec(spec, valid_ids)
+        if reason:
+            events.append(f"chart spec dropped: {reason}")
+            continue
+        spec["id"] = f"ch{len(charts) + 1}"
+        charts.append(spec)
+    return {"charts": charts, "llm_calls": 1, "budget_events": events}
+
+
+def critic(state: RunState) -> RunState:
+    if not settings.critic_enabled:
+        return {"critiques": []}
+    critiques: list[dict] = []
+    calls = 0
+    for d in state.get("drafts", []):
+        raw = generate(CRITIC_SYSTEM, f"## {d['heading']}\n\n{d['markdown']}")
+        calls += 1
+        try:
+            v = extract_json(raw)
+        except ValueError:
+            v = {"verdict": "accept", "notes": "critic reply unparseable",
+                 "scores": {}}
+        critiques.append({
+            "section_id": d["section_id"],
+            "verdict": v.get("verdict") if v.get("verdict") in ("accept", "revise")
+            else "accept",
+            "notes": str(v.get("notes", "")).strip(),
+            "scores": v.get("scores") or {},
+        })
+    return {"critiques": critiques, "llm_calls": calls}
+
+
+def reviser(state: RunState) -> RunState:
+    """One targeted revision pass for sections the critic rejected — a hard
+    single iteration, never a loop."""
+    to_fix = {c["section_id"]: c["notes"]
+              for c in state.get("critiques", []) if c["verdict"] == "revise"}
+    if not to_fix:
+        return {}
+    plan = ResearchPlan.model_validate(state["plan"])
+    claims = resolved_claims(state)
+    drafts = [dict(d) for d in state["drafts"]]
+    events: list[str] = []
+    calls = 0
+    for i, d in enumerate(drafts):
+        if d["section_id"] not in to_fix:
+            continue
+        section = next(s for s in plan.sections if s.id == d["section_id"])
+        citable = [c for c in claims
+                   if c.section_id == section.id and c.status in CITABLE]
+        drafts[i] = _write_section(
+            section, citable, critic_notes=to_fix[d["section_id"]]).model_dump()
+        calls += 1
+        events.append(f"{section.id}: revised once after critic review")
+    return {"drafts": drafts, "llm_calls": calls, "budget_events": events}
+
+
+def assemble(state: RunState) -> RunState:
+    plan = ResearchPlan.model_validate(state["plan"])
+    claims = resolved_claims(state)
+    vmap = {v["claim_id"]: v for v in state.get("verdicts", [])}
+    report = _assemble(plan, state.get("drafts", []), claims, vmap,
+                       state.get("budget_events", []),
+                       state.get("charts", []))
+    return {"report": report}
 
 
 def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim],
-              vmap: dict, events: list[str]) -> str:
+              vmap: dict, events: list[str],
+              charts: list[dict] | None = None) -> str:
     """Deterministic assembly in code — the LLM never controls the frame."""
+    charts = charts or []
     sourced = [c for c in claims if c.source_type != "model_prior"]
     unsourced = [c for c in claims if c.source_type == "model_prior"]
     tally = {"corroborated": 0, "contested": 0, "unverifiable": 0}
@@ -345,6 +469,11 @@ def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim],
 
     for d in drafts:
         parts += [f"## {d['heading']}", "", d["markdown"], ""]
+        for ch in charts:
+            if ch.get("section_id") == d["section_id"]:
+                backing = ", ".join(ch.get("claim_ids", []))
+                parts += [f"![{ch['title']}](charts/{ch['id']}.png)",
+                          f"*{ch['title']} — data from claims: {backing}*", ""]
 
     parts += ["---", "", "## Claim ledger", ""]
     for c in claims:

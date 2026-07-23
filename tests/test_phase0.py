@@ -50,8 +50,9 @@ def test_full_linear_run(db):
     assert covered == {s.id for s in plan.sections}
 
     assert state["provider"] == "mock"
-    # 1 plan call + one research call and one write call per section
-    assert state["llm_calls"] == 1 + 2 * len(plan.sections)
+    # planner 1 + per section: research fallback + writer + critic
+    # (analyst is silent — model_prior claims are never charted)
+    assert state["llm_calls"] == 1 + 3 * len(plan.sections)
 
     report = state["report"]
     assert report.startswith(f"# {plan.title}")

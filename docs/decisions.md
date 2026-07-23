@@ -36,6 +36,21 @@ claim is `source_type=model_prior`. The assembled report states this in a
 provenance note and prints the full ledger; honesty is a day-0 invariant,
 not a Phase 3 retrofit.
 
+## ADR-005: Spec-driven charts — the analyst never writes code
+**Date:** 2026-07-23 · **Status:** accepted
+
+The master plan calls for chart generation in a sandboxed Python container;
+this machine has no Docker, and `exec()` on LLM output without a sandbox is
+not a risk worth taking. Instead the analyst emits a JSON chart SPEC (kind,
+x, y, claim_ids) and `charts.py` renders it with matplotlib in-process.
+Validation rejects any spec whose claim_ids aren't in the ledger, whose
+series lengths mismatch, or whose y-values aren't numeric — and charts may
+only draw on SOURCED claims (never model_prior): a chart implies data
+authority, so it must trace to a fetched quote. Rejections are logged to
+the run notes. We lose arbitrary analysis flexibility; we gain structural
+safety and claim-traceable charts, consistent with the ledger philosophy.
+Revisit (sandboxed python_exec tool) when Docker lands.
+
 ## ADR-004: Report frame assembled in code, not by the LLM
 **Date:** 2026-07-23 · **Status:** accepted
 

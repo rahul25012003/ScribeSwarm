@@ -64,8 +64,8 @@ def test_parallel_branches_merge_all_sections(db):
 def test_counters_sum_across_branches(db):
     state = run(QUESTION, "t2", db_path=db, budget=_budget())
     n = len(state["plan"]["sections"])
-    # planner 1 + extraction (1 page/section -> 1 call) + writer n
-    assert state["llm_calls"] == 1 + n + n
+    # planner 1 + per section: extraction + writer + critic, + analyst 1
+    assert state["llm_calls"] == 1 + 3 * n + 1
     # searches (1 sub-question per section in mock) + fetches (1/section)
     assert state["tool_calls"] == n + n
 
