@@ -148,6 +148,8 @@ def _mock(system: str, user: str) -> str:
         return _mock_claims(user)
     if role == "EXTRACTOR":
         return _mock_extract(user)
+    if role == "VERIFIER":
+        return _mock_verify(user)
     if role == "WRITER":
         return _mock_draft(user)
     return "mock reply"
@@ -184,6 +186,20 @@ def _mock_extract(user: str) -> str:
         "quote": first_line[:120],
         "confidence": 0.8,
     }])
+
+
+def _mock_verify(user: str) -> str:
+    claim_match = re.search(r"CLAIM: (.+)", user)
+    claim = claim_match.group(1) if claim_match else ""
+    if "disputed" in claim.lower():
+        body = user.split("INDEPENDENT EVIDENCE TEXT:", 1)[-1]
+        first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+        return json.dumps({"status": "contested",
+                           "reason": "mock found disagreement",
+                           "counter_quote": first[:120]})
+    return json.dumps({"status": "corroborated",
+                       "reason": "mock corroboration",
+                       "counter_quote": ""})
 
 
 def _mock_draft(user: str) -> str:

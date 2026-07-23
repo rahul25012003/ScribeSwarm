@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     max_tool_calls: int = 80
     max_wall_seconds: float = 600.0  # 0 disables the wall clock cap
 
+    # Adversarial fact-checking (Phase 3)
+    verify_claims: bool = True
+    max_verify_per_section: int = 3  # highest-confidence claims re-checked
+
     # LLM
     llm_provider: str = "auto"    # auto | anthropic | openai | gemini | mock
     anthropic_model: str = "claude-opus-4-8"

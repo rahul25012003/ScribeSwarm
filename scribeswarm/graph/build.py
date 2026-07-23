@@ -36,14 +36,43 @@ def _fan_out(state: RunState):
     ]
 
 
+def _fan_out_verify(state: RunState):
+    """After research merges: fan out one fact-check branch per section that
+    produced sourced claims — or skip straight to the writer."""
+    if not settings.verify_claims:
+        return "writer"
+    by_section: dict[str, list[dict]] = {}
+    for c in state.get("claims", []):
+        if c["source_type"] != "model_prior" and c["status"] == "unverified":
+            by_section.setdefault(c["section_id"], []).append(c)
+    if not by_section:
+        return "writer"
+    return [
+        Send("fact_check_section", {
+            "section_id": sid,
+            "claims": section_claims,
+            "n_sections": len(by_section),
+            "budget": state.get("budget", {}),
+            "llm_spent": state.get("llm_calls", 0),
+            "tool_spent": state.get("tool_calls", 0),
+        })
+        for sid, section_claims in by_section.items()
+    ]
+
+
 def build_graph(checkpointer: SqliteSaver):
     builder = StateGraph(RunState)
     builder.add_node("planner", nodes.planner)
     builder.add_node("research_section", nodes.research_section)
+    builder.add_node("verify_gate", nodes.verify_gate)
+    builder.add_node("fact_check_section", nodes.fact_check_section)
     builder.add_node("writer", nodes.writer)
     builder.add_edge(START, "planner")
     builder.add_conditional_edges("planner", _fan_out, ["research_section"])
-    builder.add_edge("research_section", "writer")
+    builder.add_edge("research_section", "verify_gate")
+    builder.add_conditional_edges(
+        "verify_gate", _fan_out_verify, ["fact_check_section", "writer"])
+    builder.add_edge("fact_check_section", "writer")
     builder.add_edge("writer", END)
     return builder.compile(checkpointer=checkpointer)
 

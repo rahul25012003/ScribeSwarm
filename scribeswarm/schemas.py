@@ -63,3 +63,7 @@ class RunState(TypedDict, total=False):
     llm_calls: Annotated[int, operator.add]
     tool_calls: Annotated[int, operator.add]
     budget_events: Annotated[list[str], operator.add]  # degradation log
+    # Fact-checker output (Phase 3) — append-only verdict events; the writer
+    # folds them over the ledger (claims channel itself is append-only):
+    # {claim_id, status, reason, counter_url, counter_quote}
+    verdicts: Annotated[list[dict], operator.add]

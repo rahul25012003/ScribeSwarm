@@ -68,7 +68,8 @@ def test_sourced_run_produces_grounded_web_claims(db, wired):
     assert state["tool_calls"] > 0
 
 
-def test_page_cap_respected(db, wired):
+def test_page_cap_respected(db, wired, monkeypatch):
+    monkeypatch.setattr(settings, "verify_claims", False)  # research fetches only
     _, fetcher = wired
     state = run(QUESTION, "t2", db_path=db)
     sections = len(state["plan"]["sections"])

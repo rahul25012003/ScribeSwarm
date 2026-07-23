@@ -28,8 +28,13 @@ def run(question: str,
         thread: str = typer.Option(None, help="Thread id (reuse to resume)"),
         max_llm: int = typer.Option(None, help="Cap on LLM calls this run"),
         max_tools: int = typer.Option(None, help="Cap on tool calls this run"),
-        max_seconds: float = typer.Option(None, help="Wall-time cap (0 = off)")):
+        max_seconds: float = typer.Option(None, help="Wall-time cap (0 = off)"),
+        verify: bool = typer.Option(True, "--verify/--no-verify",
+                                    help="Adversarial fact-check pass")):
+    from scribeswarm.config import settings
     from scribeswarm.graph.build import default_budget, run as run_graph
+
+    settings.verify_claims = verify
 
     budget = default_budget()
     if max_llm is not None:

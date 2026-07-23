@@ -32,6 +32,7 @@ class FakeFetcher:
 @pytest.fixture(autouse=True)
 def wired(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "mock")
+    monkeypatch.setattr(settings, "verify_claims", False)  # Ph3 tested separately
     monkeypatch.setattr(
         nodes, "get_toolset",
         lambda: Toolset(search=FakeSearch(), fetcher=FakeFetcher()))

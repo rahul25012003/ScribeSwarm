@@ -1,14 +1,19 @@
-"""Nodes: PLANNER -> parallel RESEARCH_SECTION fan-out -> WRITER.
+"""Nodes: PLANNER -> parallel RESEARCH_SECTION -> parallel FACT_CHECK_SECTION
+-> WRITER.
 
-Each node returns DELTAS: reducer-annotated state keys (claims, llm_calls,
-tool_calls, budget_events) are merged by LangGraph across the parallel
-research branches, so a node never reports totals — only what it spent.
+Each node returns DELTAS: reducer-annotated state keys (claims, verdicts,
+llm_calls, tool_calls, budget_events) are merged by LangGraph across the
+parallel branches, so a node never reports totals — only what it spent.
 
-Phase 1 honesty invariant: a web/pdf claim enters the ledger only with an
-exact quote that VERBATIM-matches the fetched source text (whitespace/case
-normalized); failures stay in the ledger as quote_not_found but are never
-citable. Phase 2 adds the budget governor: sections degrade (fewer pages,
-then no research) and log a budget event instead of dying mid-run.
+Honesty invariants:
+- Phase 1: a web/pdf claim is citable only with a VERBATIM quote from its
+  source (normalized containment); failures stay ledgered as quote_not_found.
+- Phase 2: budgets degrade sections gracefully and log events, never crash.
+- Phase 3: material claims are adversarially re-searched WITHOUT the original
+  source. corroborated/contested survive into prose (contested rendered as
+  disputed, with the counter-source); unverifiable claims are pulled from
+  prose and land in the honesty appendix. The claims channel is append-only,
+  so verdicts are separate events folded over the ledger at write time.
 """
 
 from __future__ import annotations
@@ -49,12 +54,25 @@ RESEARCHER_SYSTEM = (
     "claims. No prose, no fences."
 )
 
+VERIFIER_SYSTEM = (
+    "You are the VERIFIER, an adversarial fact-checker. You get a claim and "
+    "INDEPENDENT evidence text found without the claim's original source. "
+    "Judge strictly: corroborated (evidence clearly supports it), contested "
+    "(evidence clearly disagrees — include the disagreeing passage COPIED "
+    "VERBATIM as counter_quote), or unverifiable (evidence is silent or "
+    "off-topic). Reply with ONLY valid JSON: "
+    '{"status": "corroborated"|"contested"|"unverifiable", "reason": str, '
+    '"counter_quote": str}. No prose, no fences.'
+)
+
 WRITER_SYSTEM = (
     "You are the WRITER for one section of a report. Write 1-2 tight "
     "markdown paragraphs for the given heading, using ONLY the numbered "
-    "claims provided — cite each claim you use inline as [id]. Do not "
-    "introduce any fact that is not in a claim. No heading in your reply, "
-    "no fences, just the paragraphs."
+    "claims provided — cite each claim you use inline as [id]. Claims "
+    "marked CONTESTED are disputed by an independent source: present them "
+    "as disputed, never as settled fact. Do not introduce any fact that is "
+    "not in a claim. No heading in your reply, no fences, just the "
+    "paragraphs."
 )
 
 
@@ -174,20 +192,108 @@ def research_section(payload: dict) -> RunState:
             "budget_events": events}
 
 
+def verify_gate(state: RunState) -> RunState:
+    """Barrier node between research fan-out and fact-check fan-out."""
+    return {}
+
+
+def fact_check_section(payload: dict) -> RunState:
+    """One parallel branch: adversarially re-check the highest-confidence
+    sourced claims of a single section, WITHOUT using their original source.
+
+    `payload`: {section_id, claims, budget, n_sections, llm_spent, tool_spent}."""
+    claims = [Claim.model_validate(c) for c in payload["claims"]]
+    sb = allocate(payload.get("budget", {}), payload.get("n_sections", 1),
+                  payload.get("llm_spent", 0), payload.get("tool_spent", 0))
+    tools = get_toolset()
+    verdicts: list[dict] = []
+    events: list[str] = []
+    llm = tool = 0
+
+    material = sorted(claims, key=lambda c: -c.confidence)
+    material = material[: settings.max_verify_per_section]
+
+    for claim in material:
+        if sb.expired() or llm >= sb.llm or tool >= sb.tool:
+            events.append(f"{payload['section_id']}: verification budget "
+                          f"exhausted after {len(verdicts)} claim(s)")
+            break
+
+        # independent re-search: never fetch the claim's own source
+        results = tools.search.search(claim.text[:120], max_results=settings.
+                                      search_results_per_query)
+        tool += 1
+        page = None
+        for r in results:
+            if r.url == claim.source_url:
+                continue
+            if tool >= sb.tool:
+                break
+            page = tools.fetcher.fetch(r.url)
+            tool += 1
+            if page:
+                break
+
+        if page is None:
+            verdicts.append({"claim_id": claim.id, "status": "unverifiable",
+                             "reason": "no independent source found",
+                             "counter_url": "", "counter_quote": ""})
+            continue
+
+        raw = generate(VERIFIER_SYSTEM, (
+            f"CLAIM: {claim.text}\n"
+            f"(original source, do NOT rely on it: {claim.source_url})\n"
+            f"INDEPENDENT EVIDENCE URL: {page.url}\n"
+            f"INDEPENDENT EVIDENCE TEXT:\n{page.text[: settings.extract_chars]}"
+        ))
+        llm += 1
+        try:
+            v = extract_json(raw)
+        except ValueError:
+            v = {"status": "unverifiable", "reason": "verifier reply unparseable"}
+        status = str(v.get("status", "unverifiable"))
+        if status not in ("corroborated", "contested", "unverifiable"):
+            status = "unverifiable"
+        counter_quote = str(v.get("counter_quote", "")).strip()
+        if status == "contested" and not quote_in_text(counter_quote, page.text):
+            status, counter_quote = "unverifiable", ""
+            v["reason"] = "contest quote failed grounding against evidence"
+        verdicts.append({
+            "claim_id": claim.id,
+            "status": status,
+            "reason": str(v.get("reason", "")).strip(),
+            "counter_url": page.url if status == "contested" else "",
+            "counter_quote": counter_quote if status == "contested" else "",
+        })
+
+    return {"verdicts": verdicts, "llm_calls": llm, "tool_calls": tool,
+            "budget_events": events}
+
+
+CITABLE = ("corroborated", "contested", "unverified")
+
+
 def writer(state: RunState) -> RunState:
     plan = ResearchPlan.model_validate(state["plan"])
     order = {s.id: i for i, s in enumerate(plan.sections)}
+    vmap = {v["claim_id"]: v for v in state.get("verdicts", [])}
     claims = sorted(
         (Claim.model_validate(c) for c in state["claims"]),
         key=lambda c: (order.get(c.section_id, 99),
-                       int(re.sub(r"\D", "", c.id) or 0)),
+                       int(re.sub(r"\D", "", c.id[len(c.section_id):]) or 0)),
     )
+    for c in claims:                      # fold verdict events over the ledger
+        if c.id in vmap:
+            c.status = vmap[c.id]["status"]
+
     drafts: list[dict] = []
     calls = 0
     for section in plan.sections:
         citable = [c for c in claims
-                   if c.section_id == section.id and c.status != "quote_not_found"]
-        listing = "\n".join(f"[{c.id}] {c.text}" for c in citable)
+                   if c.section_id == section.id and c.status in CITABLE]
+        listing = "\n".join(
+            f"[{c.id}]{' (CONTESTED)' if c.status == 'contested' else ''} {c.text}"
+            for c in citable)
         raw = generate(
             WRITER_SYSTEM,
             f"## {section.heading}\nClaims you may cite:\n{listing}",
@@ -201,16 +307,21 @@ def writer(state: RunState) -> RunState:
         ).model_dump())
     return {
         "drafts": drafts,
-        "report": _assemble(plan, drafts, claims, state.get("budget_events", [])),
+        "report": _assemble(plan, drafts, claims, vmap,
+                            state.get("budget_events", [])),
         "llm_calls": calls,
     }
 
 
 def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim],
-              events: list[str]) -> str:
+              vmap: dict, events: list[str]) -> str:
     """Deterministic assembly in code — the LLM never controls the frame."""
     sourced = [c for c in claims if c.source_type != "model_prior"]
     unsourced = [c for c in claims if c.source_type == "model_prior"]
+    tally = {"corroborated": 0, "contested": 0, "unverifiable": 0}
+    for c in claims:
+        if c.status in tally:
+            tally[c.status] += 1
 
     parts = [f"# {plan.title}", ""]
     if not sourced:
@@ -220,14 +331,18 @@ def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim],
             "as unverified.",
             "",
         ]
-    elif unsourced:
-        parts += [
-            f"> **Provenance note:** {len(sourced)} of {len(claims)} claims "
-            "are quote-grounded in fetched sources; the remaining "
-            f"{len(unsourced)} are unsourced model knowledge (marked "
-            "model_prior in the ledger).",
-            "",
-        ]
+    else:
+        note = (f"> **Provenance note:** {len(sourced)} of {len(claims)} "
+                "claims are quote-grounded in fetched sources")
+        if unsourced:
+            note += (f"; {len(unsourced)} are unsourced model knowledge "
+                     "(marked model_prior in the ledger)")
+        if vmap:
+            note += (f". Independent fact-check: {tally['corroborated']} "
+                     f"corroborated, {tally['contested']} contested, "
+                     f"{tally['unverifiable']} unverifiable")
+        parts += [note + ".", ""]
+
     for d in drafts:
         parts += [f"## {d['heading']}", "", d["markdown"], ""]
 
@@ -245,6 +360,25 @@ def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim],
     if urls:
         parts += ["", "## Sources", ""]
         parts += [f"- {u}" for u in urls]
+
+    rejected = [c for c in claims if c.status in ("unverifiable", "quote_not_found")]
+    contested = [c for c in claims if c.status == "contested"]
+    if rejected or contested:
+        parts += ["", "## Honesty appendix", ""]
+        for c in contested:
+            v = vmap.get(c.id, {})
+            parts.append(
+                f"- **[{c.id}] contested** — {c.text} · disputed by "
+                f"{v.get('counter_url', '?')}: \"{v.get('counter_quote', '')}\""
+            )
+        for c in rejected:
+            reason = (vmap.get(c.id, {}).get("reason")
+                      or ("supporting quote not found in source"
+                          if c.status == "quote_not_found" else ""))
+            parts.append(
+                f"- **[{c.id}] {c.status}** (excluded from prose) — "
+                f"{c.text} · {reason}"
+            )
 
     if events:
         parts += ["", "## Run notes (budget governor)", ""]
