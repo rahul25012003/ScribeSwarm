@@ -10,9 +10,27 @@ from scribeswarm.schemas import Claim, ResearchPlan
 QUESTION = "Compare the EV battery supply chains of India, China, and the EU"
 
 
+class EmptySearch:
+    """No results — forces the model-prior fallback path (Phase 0 behavior)."""
+
+    def search(self, query, max_results=5):
+        return []
+
+
+class NoFetch:
+    def fetch(self, url):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def mock_provider(monkeypatch):
+    from scribeswarm.graph import nodes
+    from scribeswarm.tools import Toolset
+
     monkeypatch.setattr(settings, "llm_provider", "mock")
+    monkeypatch.setattr(
+        nodes, "get_toolset",
+        lambda: Toolset(search=EmptySearch(), fetcher=NoFetch()))
 
 
 @pytest.fixture()

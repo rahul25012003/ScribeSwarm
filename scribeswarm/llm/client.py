@@ -106,17 +106,24 @@ def _openai(system: str, user: str) -> str:
 
 
 def _gemini(system: str, user: str) -> str:
-    resp = httpx.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent",
-        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
-        json={
-            "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"maxOutputTokens": settings.max_output_tokens},
-        },
-        timeout=settings.request_timeout,
-    )
+    import time
+
+    for attempt, backoff in enumerate((15, 30, 0)):
+        resp = httpx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{settings.gemini_model}:generateContent",
+            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+            json={
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": {"maxOutputTokens": settings.max_output_tokens},
+            },
+            timeout=settings.request_timeout,
+        )
+        if resp.status_code == 429 and backoff:   # free tier ~10 RPM
+            time.sleep(backoff)
+            continue
+        break
     resp.raise_for_status()
     data = resp.json()
     candidates = data.get("candidates") or []
@@ -139,6 +146,8 @@ def _mock(system: str, user: str) -> str:
         return _mock_plan(user)
     if role == "RESEARCHER":
         return _mock_claims(user)
+    if role == "EXTRACTOR":
+        return _mock_extract(user)
     if role == "WRITER":
         return _mock_draft(user)
     return "mock reply"
@@ -147,7 +156,8 @@ def _mock(system: str, user: str) -> str:
 def _mock_plan(user: str) -> str:
     topic = user.strip().splitlines()[-1][:60] or "the topic"
     sections = [
-        {"id": f"s{i}", "heading": h, "sub_questions": [f"{h} — key fact {i}?"]}
+        {"id": f"s{i}", "heading": h,
+         "sub_questions": [f"{topic} {h.lower()}"]}
         for i, h in enumerate(
             ["Background", "Current landscape", "Comparison", "Outlook"], start=1
         )
@@ -162,6 +172,18 @@ def _mock_claims(user: str) -> str:
         {"text": f"Deterministic mock claim A for {sid}.", "confidence": 0.9},
         {"text": f"Deterministic mock claim B for {sid}.", "confidence": 0.6},
     ])
+
+
+def _mock_extract(user: str) -> str:
+    url_match = re.search(r"URL: (\S+)", user)
+    url = url_match.group(1) if url_match else "unknown"
+    body = user.split("PAGE TEXT:", 1)[-1]
+    first_line = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    return json.dumps([{
+        "claim": f"Mock claim extracted from {url}.",
+        "quote": first_line[:120],
+        "confidence": 0.8,
+    }])
 
 
 def _mock_draft(user: str) -> str:

@@ -54,4 +54,5 @@ class RunState(TypedDict, total=False):
     claims: list[dict]     # Claim ledger — list of Claim.model_dump()
     drafts: list[dict]     # list of SectionDraft.model_dump()
     report: str            # final assembled markdown
-    llm_calls: int         # budget counter (governor arrives in Phase 2)
+    llm_calls: int         # budget counters (governor arrives in Phase 2)
+    tool_calls: int

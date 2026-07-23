@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     max_sections: int = 4
     max_sub_questions: int = 3
 
+    # Research tools (Phase 1)
+    search_results_per_query: int = 4
+    pages_per_section: int = 2       # fetch cap — budget seed, governor in Ph2
+    extract_chars: int = 12000       # page text given to the claim extractor
+    max_claims_per_page: int = 4
+
     # LLM
     llm_provider: str = "auto"    # auto | anthropic | openai | gemini | mock
     anthropic_model: str = "claude-opus-4-8"
