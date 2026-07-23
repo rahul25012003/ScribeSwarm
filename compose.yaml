@@ -1,0 +1,14 @@
+# docker compose up  ->  http://localhost:8000
+# NOTE: authored on a machine without Docker; first verified run pending.
+services:
+  scribeswarm:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env          # GEMINI_API_KEY etc. — never baked into the image
+    volumes:
+      - scribeswarm-data:/app/data
+
+volumes:
+  scribeswarm-data:
