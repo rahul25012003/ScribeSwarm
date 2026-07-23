@@ -1,76 +1,9 @@
-thread: live-shakedown-20260723
-Traceback (most recent call last):
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\cli.py", line 104, in <module>
-    app()
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\main.py", line 1154, in __call__
-    raise e
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\main.py", line 1137, in __call__
-    return get_command(self)(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\_click\core.py", line 807, in __call__
-    return self.main(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\core.py", line 1203, in main
-    return _main(
-           ^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\core.py", line 189, in _main
-    rv = self.invoke(ctx)
-         ^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\core.py", line 1125, in invoke
-    return _process_result(sub_ctx.command.invoke(sub_ctx))
-                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\_click\core.py", line 746, in invoke
-    return ctx.invoke(self.callback, **ctx.params)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\_click\core.py", line 489, in invoke
-    return callback(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\typer\main.py", line 1524, in wrapper
-    return callback(**use_params)
-           ^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\cli.py", line 50, in run
-    state = run_graph(question, thread_id, budget=budget)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\scribeswarm\graph\build.py", line 123, in run
-    return graph.invoke(payload, config=config)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\pregel\main.py", line 3913, in invoke
-    for chunk in self.stream(
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\pregel\main.py", line 2967, in stream
-    for _ in runner.tick(
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\pregel\_runner.py", line 344, in tick
-    _panic_or_proceed(
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\pregel\_runner.py", line 687, in _panic_or_proceed
-    raise exc
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\pregel\_executor.py", line 80, in done
-    task.result()
-  File "C:\Python312\Lib\concurrent\futures\_base.py", line 449, in result
-    return self.__get_result()
-           ^^^^^^^^^^^^^^^^^^^
-  File "C:\Python312\Lib\concurrent\futures\_base.py", line 401, in __get_result
-    raise self._exception
-  File "C:\Python312\Lib\concurrent\futures\thread.py", line 58, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\pregel\_retry.py", line 617, in run_with_retry
-    return task.proc.invoke(task.input, config)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 684, in invoke
-    input = context.run(step.invoke, input, config, **kwargs)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 426, in invoke
-    ret = self.func(*args, **kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\scribeswarm\graph\nodes.py", line 171, in research_section
-    raw = generate(EXTRACTOR_SYSTEM, (
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\scribeswarm\llm\client.py", line 45, in generate
-    return _gemini(system, user)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\scribeswarm\llm\client.py", line 127, in _gemini
-    resp.raise_for_status()
-  File "C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\.venv\Lib\site-packages\httpx\_models.py", line 829, in raise_for_status
-    raise HTTPStatusError(message, request=request, response=self)
-httpx.HTTPStatusError: Client error '429 Too Many Requests' for url 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-During task with name 'research_section' and id '76dd61fb-87aa-716b-646b-1730481f3a1a'
+thread: live-shakedown-v2
+done in 630.5s — provider=gemini llm_calls=6 tool_calls=3 claims=0 charts=0 revised=0
+  note: planner degraded to a single-section fallback plan (LLM unavailable or reply unparseable)
+  note: s1: extractor LLM failed — page skipped (https://theicct.org/pr-ev-battery-materials-demand-supply-dec24/)
+  note: s1: extractor LLM failed — page skipped (https://theicct.org/publication/ev-battery-materials-demand-supply-dec24/)
+  note: s1: no sourced claims and the model-prior fallback failed — section empty
+  note: s1: writer LLM failed — deterministic claim-list fallback used
+report: C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\data\runs\live-shakedown-v2\report.md
+html:   C:\Users\Rahul\Videos\Mission 2030\ScribeSwarm\data\runs\live-shakedown-v2\report.html

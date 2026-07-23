@@ -97,6 +97,14 @@ threads are immutable.
 resumable (`--resume evals/results/benchmark_*.jsonl`) and paced for the
 ~10 RPM limit. Mock-mode mechanics are fully covered in CI.
 
+**Production outage proof (2026-07-23):** the first live shakedown hit total
+quota exhaustion — every Gemini call 429'd past the backoff tiers. The run
+**still finished**: planner degraded to a fallback plan, failed pages were
+skipped, the writer fell back to a deterministic ledger-cited listing, and
+every degradation landed in the report's run notes
+(`data/runs/live-shakedown-v2/report.md`). Degrade-never-die is verified
+against a real outage; live *quality* numbers land in the next quota window.
+
 ## Tests
 
 ```powershell
