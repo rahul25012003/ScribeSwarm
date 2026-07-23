@@ -42,9 +42,14 @@ class Settings(BaseSettings):
 
     # Research tools (Phase 1)
     search_results_per_query: int = 4
-    pages_per_section: int = 2       # fetch cap — budget seed, governor in Ph2
+    pages_per_section: int = 2       # fetch cap per section
     extract_chars: int = 12000       # page text given to the claim extractor
     max_claims_per_page: int = 4
+
+    # Budget governor (Phase 2) — hard caps per run
+    max_llm_calls: int = 60
+    max_tool_calls: int = 80
+    max_wall_seconds: float = 600.0  # 0 disables the wall clock cap
 
     # LLM
     llm_provider: str = "auto"    # auto | anthropic | openai | gemini | mock

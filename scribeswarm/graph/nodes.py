@@ -1,15 +1,14 @@
-"""Nodes: PLANNER -> RESEARCHER (tools) -> WRITER (linear until Phase 2).
+"""Nodes: PLANNER -> parallel RESEARCH_SECTION fan-out -> WRITER.
 
-Every node is a pure function RunState -> partial RunState update, validated
-through pydantic at the boundary and stored as plain dicts so the SQLite
-checkpointer can persist each step.
+Each node returns DELTAS: reducer-annotated state keys (claims, llm_calls,
+tool_calls, budget_events) are merged by LangGraph across the parallel
+research branches, so a node never reports totals — only what it spent.
 
 Phase 1 honesty invariant: a web/pdf claim enters the ledger only with an
 exact quote that VERBATIM-matches the fetched source text (whitespace/case
-normalized). Extractor output that fails the match is kept in the ledger as
-status=quote_not_found but is never citable by the writer. Sections whose
-sources all fail degrade to clearly-labeled model_prior claims — the report
-frame says how many claims are sourced vs not.
+normalized); failures stay in the ledger as quote_not_found but are never
+citable. Phase 2 adds the budget governor: sections degrade (fewer pages,
+then no research) and log a budget event instead of dying mid-run.
 """
 
 from __future__ import annotations
@@ -17,8 +16,9 @@ from __future__ import annotations
 import re
 
 from scribeswarm.config import settings
+from scribeswarm.governor import allocate
 from scribeswarm.llm.client import extract_json, generate, resolve_provider
-from scribeswarm.schemas import Claim, ResearchPlan, RunState, SectionDraft
+from scribeswarm.schemas import Claim, PlanSection, ResearchPlan, RunState, SectionDraft
 from scribeswarm.tools import get_toolset
 
 PLANNER_SYSTEM = (
@@ -52,14 +52,10 @@ RESEARCHER_SYSTEM = (
 WRITER_SYSTEM = (
     "You are the WRITER for one section of a report. Write 1-2 tight "
     "markdown paragraphs for the given heading, using ONLY the numbered "
-    "claims provided — cite each claim you use inline as [cN]. Do not "
+    "claims provided — cite each claim you use inline as [id]. Do not "
     "introduce any fact that is not in a claim. No heading in your reply, "
     "no fences, just the paragraphs."
 )
-
-
-def _bump(state: RunState, key: str, n: int) -> int:
-    return int(state.get(key, 0)) + n
 
 
 def _norm(text: str) -> str:
@@ -79,85 +75,113 @@ def planner(state: RunState) -> RunState:
     return {
         "plan": plan.model_dump(),
         "provider": resolve_provider(),
-        "llm_calls": _bump(state, "llm_calls", 1),
+        "llm_calls": 1,
     }
 
 
-def researcher(state: RunState) -> RunState:
-    plan = ResearchPlan.model_validate(state["plan"])
+def research_section(payload: dict) -> RunState:
+    """One parallel branch: research a single section within its budget slice.
+
+    `payload` comes from the Send fan-out, not the global state:
+    {section, plan_title, n_sections, budget, llm_spent, tool_spent}."""
+    section = PlanSection.model_validate(payload["section"])
+    sb = allocate(payload.get("budget", {}), payload.get("n_sections", 1),
+                  payload.get("llm_spent", 0), payload.get("tool_spent", 0))
     tools = get_toolset()
     ledger: list[dict] = []
-    llm_calls = tool_calls = 0
+    events: list[str] = []
+    llm = tool = 0
 
-    for section in plan.sections:
-        # 1) search every sub-question, dedupe URLs preserving rank order
-        seen: dict[str, str] = {}       # url -> snippet/title context
-        for sub_q in section.sub_questions[: settings.max_sub_questions]:
-            results = tools.search.search(
-                sub_q, max_results=settings.search_results_per_query)
-            tool_calls += 1
-            for r in results:
-                seen.setdefault(r.url, r.title)
+    def claim_id() -> str:
+        return f"{section.id}c{len(ledger) + 1}"
 
-        # 2) fetch until the per-section page cap is met
-        pages = []
-        for url in seen:
-            if len(pages) >= settings.pages_per_section:
-                break
-            page = tools.fetcher.fetch(url)
-            tool_calls += 1
-            if page:
-                pages.append(page)
+    # 1) search every sub-question, dedupe URLs preserving rank order
+    seen: dict[str, str] = {}
+    for sub_q in section.sub_questions[: settings.max_sub_questions]:
+        if sb.expired():
+            events.append(f"{section.id}: wall-time cap hit before search")
+            break
+        if tool >= sb.tool:
+            events.append(f"{section.id}: tool budget exhausted during search")
+            break
+        results = tools.search.search(
+            sub_q, max_results=settings.search_results_per_query)
+        tool += 1
+        for r in results:
+            seen.setdefault(r.url, r.title)
 
-        # 3) extract quote-grounded claims per page
-        for page in pages:
-            raw = generate(EXTRACTOR_SYSTEM, (
-                f"Section heading: {section.heading}\n"
-                f"Sub-questions: {'; '.join(section.sub_questions)}\n"
-                f"URL: {page.url}\nPAGE TITLE: {page.title}\n"
-                f"PAGE TEXT:\n{page.text[: settings.extract_chars]}"
-            ))
-            llm_calls += 1
-            for item in extract_json(raw)[: settings.max_claims_per_page]:
-                quote = str(item.get("quote", "")).strip()
-                grounded = quote_in_text(quote, page.text)
-                ledger.append(Claim(
-                    id=f"c{len(ledger) + 1}",
-                    section_id=section.id,
-                    text=str(item.get("claim", "")).strip(),
-                    source_type=page.content_type if page.content_type == "pdf" else "web",
-                    source_url=page.url,
-                    quote=quote,
-                    confidence=float(item.get("confidence", 0.5)),
-                    status="unverified" if grounded else "quote_not_found",
-                ).model_dump())
+    # 2) fetch until the per-section page cap or budget runs out
+    pages = []
+    for url in seen:
+        if len(pages) >= settings.pages_per_section:
+            break
+        if sb.expired() or tool >= sb.tool:
+            events.append(f"{section.id}: budget stopped fetching at "
+                          f"{len(pages)} page(s)")
+            break
+        page = tools.fetcher.fetch(url)
+        tool += 1
+        if page:
+            pages.append(page)
 
-        # 4) no usable sources -> honest model-prior fallback
-        if not pages:
+    # 3) extract quote-grounded claims per page
+    for page in pages:
+        if sb.expired() or llm >= sb.llm:
+            events.append(f"{section.id}: LLM budget stopped extraction")
+            break
+        raw = generate(EXTRACTOR_SYSTEM, (
+            f"Section heading: {section.heading}\n"
+            f"Sub-questions: {'; '.join(section.sub_questions)}\n"
+            f"URL: {page.url}\nPAGE TITLE: {page.title}\n"
+            f"PAGE TEXT:\n{page.text[: settings.extract_chars]}"
+        ))
+        llm += 1
+        for item in extract_json(raw)[: settings.max_claims_per_page]:
+            quote = str(item.get("quote", "")).strip()
+            grounded = quote_in_text(quote, page.text)
+            ledger.append(Claim(
+                id=claim_id(),
+                section_id=section.id,
+                text=str(item.get("claim", "")).strip(),
+                source_type=page.content_type if page.content_type == "pdf" else "web",
+                source_url=page.url,
+                quote=quote,
+                confidence=float(item.get("confidence", 0.5)),
+                status="unverified" if grounded else "quote_not_found",
+            ).model_dump())
+
+    # 4) nothing sourced -> honest model-prior fallback (if budget allows)
+    if not ledger:
+        if sb.expired() or llm >= sb.llm:
+            events.append(f"{section.id}: no research done — budget exhausted")
+        else:
             raw = generate(RESEARCHER_SYSTEM, (
-                f"Report: {plan.title}\nsection id: {section.id}\n"
+                f"Report: {payload.get('plan_title', '')}\n"
+                f"section id: {section.id}\n"
                 f"Section heading: {section.heading}\nSub-questions:\n"
                 + "\n".join(f"- {q}" for q in section.sub_questions)
             ))
-            llm_calls += 1
+            llm += 1
             for item in extract_json(raw):
                 ledger.append(Claim(
-                    id=f"c{len(ledger) + 1}",
+                    id=claim_id(),
                     section_id=section.id,
                     text=str(item.get("text", "")).strip(),
                     confidence=float(item.get("confidence", 0.5)),
                 ).model_dump())
 
-    return {
-        "claims": ledger,
-        "llm_calls": _bump(state, "llm_calls", llm_calls),
-        "tool_calls": _bump(state, "tool_calls", tool_calls),
-    }
+    return {"claims": ledger, "llm_calls": llm, "tool_calls": tool,
+            "budget_events": events}
 
 
 def writer(state: RunState) -> RunState:
     plan = ResearchPlan.model_validate(state["plan"])
-    claims = [Claim.model_validate(c) for c in state["claims"]]
+    order = {s.id: i for i, s in enumerate(plan.sections)}
+    claims = sorted(
+        (Claim.model_validate(c) for c in state["claims"]),
+        key=lambda c: (order.get(c.section_id, 99),
+                       int(re.sub(r"\D", "", c.id) or 0)),
+    )
     drafts: list[dict] = []
     calls = 0
     for section in plan.sections:
@@ -177,12 +201,13 @@ def writer(state: RunState) -> RunState:
         ).model_dump())
     return {
         "drafts": drafts,
-        "report": _assemble(plan, drafts, claims),
-        "llm_calls": _bump(state, "llm_calls", calls),
+        "report": _assemble(plan, drafts, claims, state.get("budget_events", [])),
+        "llm_calls": calls,
     }
 
 
-def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim]) -> str:
+def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim],
+              events: list[str]) -> str:
     """Deterministic assembly in code — the LLM never controls the frame."""
     sourced = [c for c in claims if c.source_type != "model_prior"]
     unsourced = [c for c in claims if c.source_type == "model_prior"]
@@ -220,4 +245,8 @@ def _assemble(plan: ResearchPlan, drafts: list[dict], claims: list[Claim]) -> st
     if urls:
         parts += ["", "## Sources", ""]
         parts += [f"- {u}" for u in urls]
+
+    if events:
+        parts += ["", "## Run notes (budget governor)", ""]
+        parts += [f"- {e}" for e in events]
     return "\n".join(parts)

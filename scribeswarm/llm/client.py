@@ -189,6 +189,6 @@ def _mock_extract(user: str) -> str:
 def _mock_draft(user: str) -> str:
     match = re.search(r"## (.+)", user)
     heading = match.group(1) if match else "Section"
-    ids = re.findall(r"\[(c\d+)\]", user)
+    ids = re.findall(r"\[([A-Za-z0-9_]*c\d+)\]", user)
     markers = " ".join(f"[{i}]" for i in ids[:2])
     return f"Mock prose for {heading}, grounded in {markers}."

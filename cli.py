@@ -25,21 +25,35 @@ def _runs_dir() -> Path:
 
 @app.command()
 def run(question: str,
-        thread: str = typer.Option(None, help="Thread id (reuse to resume)")):
-    from scribeswarm.graph.build import run as run_graph
+        thread: str = typer.Option(None, help="Thread id (reuse to resume)"),
+        max_llm: int = typer.Option(None, help="Cap on LLM calls this run"),
+        max_tools: int = typer.Option(None, help="Cap on tool calls this run"),
+        max_seconds: float = typer.Option(None, help="Wall-time cap (0 = off)")):
+    from scribeswarm.graph.build import default_budget, run as run_graph
+
+    budget = default_budget()
+    if max_llm is not None:
+        budget["max_llm_calls"] = max_llm
+    if max_tools is not None:
+        budget["max_tool_calls"] = max_tools
+    if max_seconds is not None:
+        budget["max_wall_seconds"] = max_seconds
 
     thread_id = thread or time.strftime("run_%Y%m%d_%H%M%S")
     typer.echo(f"thread: {thread_id}")
     t0 = time.perf_counter()
-    state = run_graph(question, thread_id)
+    state = run_graph(question, thread_id, budget=budget)
     elapsed = time.perf_counter() - t0
 
     out = _runs_dir() / f"{thread_id}.md"
     out.write_text(state.get("report", ""), encoding="utf-8")
     typer.echo(
         f"done in {elapsed:.1f}s — provider={state.get('provider')} "
-        f"llm_calls={state.get('llm_calls')} claims={len(state.get('claims', []))}"
+        f"llm_calls={state.get('llm_calls')} tool_calls={state.get('tool_calls', 0)} "
+        f"claims={len(state.get('claims', []))}"
     )
+    for event in state.get("budget_events", []):
+        typer.echo(f"  budget: {event}")
     typer.echo(f"report: {out}")
 
 

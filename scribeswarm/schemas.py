@@ -7,7 +7,8 @@ honesty appendix — operates on Claim rows, so the schema is the contract.
 
 from __future__ import annotations
 
-from typing import TypedDict
+import operator
+from typing import Annotated, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -46,13 +47,19 @@ class SectionDraft(BaseModel):
 
 class RunState(TypedDict, total=False):
     """The LangGraph state. Values stay JSON-serializable (plain dicts) so the
-    SQLite checkpointer can persist every step without custom serializers."""
+    SQLite checkpointer can persist every step without custom serializers.
+
+    Reducer-annotated keys merge across the parallel research branches
+    (Phase 2 Send fan-out): each branch returns DELTAS (its own claims, its
+    own call counts) and LangGraph folds them together deterministically."""
 
     question: str
     provider: str          # resolved LLM provider recorded for the run
     plan: dict             # ResearchPlan.model_dump()
-    claims: list[dict]     # Claim ledger — list of Claim.model_dump()
-    drafts: list[dict]     # list of SectionDraft.model_dump()
+    budget: dict           # {max_llm_calls, max_tool_calls, max_wall_seconds, started_at}
+    claims: Annotated[list[dict], operator.add]   # Claim ledger
+    drafts: list[dict]     # list of SectionDraft.model_dump() (writer, single write)
     report: str            # final assembled markdown
-    llm_calls: int         # budget counters (governor arrives in Phase 2)
-    tool_calls: int
+    llm_calls: Annotated[int, operator.add]
+    tool_calls: Annotated[int, operator.add]
+    budget_events: Annotated[list[str], operator.add]  # degradation log
