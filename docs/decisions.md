@@ -36,6 +36,15 @@ claim is `source_type=model_prior`. The assembled report states this in a
 provenance note and prints the full ledger; honesty is a day-0 invariant,
 not a Phase 3 retrofit.
 
+## ADR-004: Report frame assembled in code, not by the LLM
+**Date:** 2026-07-23 · **Status:** accepted
+
+The writer LLM produces section prose only. Title, section order, provenance
+note, and the claim-ledger appendix are assembled deterministically in
+`nodes._assemble`. The LLM can degrade a paragraph; it cannot drop the
+honesty header, reorder the report, or invent an appendix entry. Same
+principle as LexRAG's verifier sitting outside the model.
+
 ## ADR-005: Spec-driven charts — the analyst never writes code
 **Date:** 2026-07-23 · **Status:** accepted
 
@@ -50,12 +59,3 @@ authority, so it must trace to a fetched quote. Rejections are logged to
 the run notes. We lose arbitrary analysis flexibility; we gain structural
 safety and claim-traceable charts, consistent with the ledger philosophy.
 Revisit (sandboxed python_exec tool) when Docker lands.
-
-## ADR-004: Report frame assembled in code, not by the LLM
-**Date:** 2026-07-23 · **Status:** accepted
-
-The writer LLM produces section prose only. Title, section order, provenance
-note, and the claim-ledger appendix are assembled deterministically in
-`nodes._assemble`. The LLM can degrade a paragraph; it cannot drop the
-honesty header, reorder the report, or invent an appendix entry. Same
-principle as LexRAG's verifier sitting outside the model.
