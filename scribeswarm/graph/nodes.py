@@ -107,14 +107,57 @@ def quote_in_text(quote: str, text: str) -> bool:
     return bool(q) and q in _norm(text)
 
 
+def _try_generate(system: str, user: str) -> str | None:
+    """generate() that degrades instead of dying (Phase 2 invariant): a hard
+    provider failure — quota exhausted past the backoff tiers, network down —
+    returns None so the caller can degrade its branch. Found the hard way in
+    the first live-Gemini shakedown: an escaped 429 killed the whole graph."""
+    try:
+        return generate(system, user)
+    except Exception:  # noqa: BLE001 — any provider failure must degrade
+        return None
+
+
+def _as_list(parsed) -> list:
+    """Tolerate a real LLM wrapping its JSON array in an object."""
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for v in parsed.values():
+            if isinstance(v, list):
+                return v
+    return []
+
+
+def _conf(value) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.5
+
+
 def planner(state: RunState) -> RunState:
-    raw = generate(PLANNER_SYSTEM, f"Research question:\n{state['question']}")
-    plan = ResearchPlan.model_validate(extract_json(raw))
-    plan.sections = plan.sections[: settings.max_sections]
+    raw = _try_generate(PLANNER_SYSTEM,
+                        f"Research question:\n{state['question']}")
+    events: list[str] = []
+    try:
+        if raw is None:
+            raise ValueError("planner LLM call failed")
+        plan = ResearchPlan.model_validate(extract_json(raw))
+        plan.sections = plan.sections[: settings.max_sections]
+    except Exception:  # noqa: BLE001 — degrade to a flat plan
+        plan = ResearchPlan(
+            title=f"Report: {state['question'][:80]}",
+            sections=[PlanSection(id="s1", heading="Findings",
+                                  sub_questions=[state["question"]])],
+        )
+        events.append("planner degraded to a single-section fallback plan "
+                      "(LLM unavailable or reply unparseable)")
     return {
         "plan": plan.model_dump(),
         "provider": resolve_provider(),
         "llm_calls": 1,
+        "budget_events": events,
     }
 
 
@@ -168,14 +211,26 @@ def research_section(payload: dict) -> RunState:
         if sb.expired() or llm >= sb.llm:
             events.append(f"{section.id}: LLM budget stopped extraction")
             break
-        raw = generate(EXTRACTOR_SYSTEM, (
+        raw = _try_generate(EXTRACTOR_SYSTEM, (
             f"Section heading: {section.heading}\n"
             f"Sub-questions: {'; '.join(section.sub_questions)}\n"
             f"URL: {page.url}\nPAGE TITLE: {page.title}\n"
             f"PAGE TEXT:\n{page.text[: settings.extract_chars]}"
         ))
         llm += 1
-        for item in extract_json(raw)[: settings.max_claims_per_page]:
+        if raw is None:
+            events.append(f"{section.id}: extractor LLM failed — "
+                          f"page skipped ({page.url})")
+            continue
+        try:
+            items = _as_list(extract_json(raw))
+        except ValueError:
+            events.append(f"{section.id}: extractor reply unparseable — "
+                          f"page skipped ({page.url})")
+            continue
+        for item in items[: settings.max_claims_per_page]:
+            if not isinstance(item, dict):
+                continue
             quote = str(item.get("quote", "")).strip()
             grounded = quote_in_text(quote, page.text)
             ledger.append(Claim(
@@ -185,7 +240,7 @@ def research_section(payload: dict) -> RunState:
                 source_type=page.content_type if page.content_type == "pdf" else "web",
                 source_url=page.url,
                 quote=quote,
-                confidence=float(item.get("confidence", 0.5)),
+                confidence=_conf(item.get("confidence", 0.5)),
                 status="unverified" if grounded else "quote_not_found",
             ).model_dump())
 
@@ -194,19 +249,28 @@ def research_section(payload: dict) -> RunState:
         if sb.expired() or llm >= sb.llm:
             events.append(f"{section.id}: no research done — budget exhausted")
         else:
-            raw = generate(RESEARCHER_SYSTEM, (
+            raw = _try_generate(RESEARCHER_SYSTEM, (
                 f"Report: {payload.get('plan_title', '')}\n"
                 f"section id: {section.id}\n"
                 f"Section heading: {section.heading}\nSub-questions:\n"
                 + "\n".join(f"- {q}" for q in section.sub_questions)
             ))
             llm += 1
-            for item in extract_json(raw):
+            try:
+                items = _as_list(extract_json(raw)) if raw is not None else []
+            except ValueError:
+                items = []
+            if not items:
+                events.append(f"{section.id}: no sourced claims and the "
+                              "model-prior fallback failed — section empty")
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
                 ledger.append(Claim(
                     id=claim_id(),
                     section_id=section.id,
                     text=str(item.get("text", "")).strip(),
-                    confidence=float(item.get("confidence", 0.5)),
+                    confidence=_conf(item.get("confidence", 0.5)),
                 ).model_dump())
 
     return {"claims": ledger, "llm_calls": llm, "tool_calls": tool,
@@ -261,17 +325,24 @@ def fact_check_section(payload: dict) -> RunState:
                              "counter_url": "", "counter_quote": ""})
             continue
 
-        raw = generate(VERIFIER_SYSTEM, (
+        raw = _try_generate(VERIFIER_SYSTEM, (
             f"CLAIM: {claim.text}\n"
             f"(original source, do NOT rely on it: {claim.source_url})\n"
             f"INDEPENDENT EVIDENCE URL: {page.url}\n"
             f"INDEPENDENT EVIDENCE TEXT:\n{page.text[: settings.extract_chars]}"
         ))
         llm += 1
+        if raw is None:
+            # our outage, not the claim's fault: leave it unverified/citable
+            events.append(f"{payload['section_id']}: verifier LLM failed for "
+                          f"{claim.id} — left unverified")
+            continue
         try:
             v = extract_json(raw)
         except ValueError:
             v = {"status": "unverifiable", "reason": "verifier reply unparseable"}
+        if not isinstance(v, dict):
+            v = {"status": "unverifiable", "reason": "verifier reply malformed"}
         status = str(v.get("status", "unverifiable"))
         if status not in ("corroborated", "contested", "unverifiable"):
             status = "unverifiable"
@@ -312,7 +383,9 @@ def resolved_claims(state: RunState) -> list[Claim]:
 
 
 def _write_section(section: PlanSection, citable: list[Claim],
-                   critic_notes: str = "") -> SectionDraft:
+                   critic_notes: str = "") -> tuple[SectionDraft, bool]:
+    """Returns (draft, llm_failed). On a hard writer failure the draft
+    degrades to a deterministic claim listing — still 100% ledger-cited."""
     listing = "\n".join(
         f"[{c.id}]{' (CONTESTED)' if c.status == 'contested' else ''} {c.text}"
         for c in citable)
@@ -320,27 +393,38 @@ def _write_section(section: PlanSection, citable: list[Claim],
     if critic_notes:
         user += ("\n\nA reviewer rejected the previous draft. Fix exactly "
                  f"these issues:\n{critic_notes}")
-    raw = generate(WRITER_SYSTEM, user)
+    raw = _try_generate(WRITER_SYSTEM, user)
+    failed = raw is None
+    if failed:
+        raw = "\n".join(
+            f"- {c.text}{' *(disputed by an independent source)*' if c.status == 'contested' else ''} [{c.id}]"
+            for c in citable
+        ) or "*No citable claims were gathered for this section.*"
     return SectionDraft(
         section_id=section.id,
         heading=section.heading,
         markdown=raw.strip(),
         cited_claim_ids=[c.id for c in citable if f"[{c.id}]" in raw],
         revised=bool(critic_notes),
-    )
+    ), failed
 
 
 def writer(state: RunState) -> RunState:
     plan = ResearchPlan.model_validate(state["plan"])
     claims = resolved_claims(state)
     drafts: list[dict] = []
+    events: list[str] = []
     calls = 0
     for section in plan.sections:
         citable = [c for c in claims
                    if c.section_id == section.id and c.status in CITABLE]
-        drafts.append(_write_section(section, citable).model_dump())
+        draft, failed = _write_section(section, citable)
+        drafts.append(draft.model_dump())
         calls += 1
-    return {"drafts": drafts, "llm_calls": calls}
+        if failed:
+            events.append(f"{section.id}: writer LLM failed — deterministic "
+                          "claim-list fallback used")
+    return {"drafts": drafts, "llm_calls": calls, "budget_events": events}
 
 
 def analyst(state: RunState) -> RunState:
@@ -355,7 +439,10 @@ def analyst(state: RunState) -> RunState:
     if not claims:
         return {"charts": []}
     listing = "\n".join(f"[{c.id}] ({c.section_id}) {c.text}" for c in claims)
-    raw = generate(ANALYST_SYSTEM, f"Numbered claims:\n{listing}")
+    raw = _try_generate(ANALYST_SYSTEM, f"Numbered claims:\n{listing}")
+    if raw is None:
+        return {"charts": [], "llm_calls": 1,
+                "budget_events": ["analyst LLM failed — no charts"]}
     try:
         specs = extract_json(raw)
     except ValueError:
@@ -383,12 +470,22 @@ def critic(state: RunState) -> RunState:
     critiques: list[dict] = []
     calls = 0
     for d in state.get("drafts", []):
-        raw = generate(CRITIC_SYSTEM, f"## {d['heading']}\n\n{d['markdown']}")
+        raw = _try_generate(CRITIC_SYSTEM,
+                            f"## {d['heading']}\n\n{d['markdown']}")
         calls += 1
+        if raw is None:
+            critiques.append({"section_id": d["section_id"],
+                              "verdict": "accept",
+                              "notes": "critic LLM failed — draft accepted",
+                              "scores": {}})
+            continue
         try:
             v = extract_json(raw)
         except ValueError:
             v = {"verdict": "accept", "notes": "critic reply unparseable",
+                 "scores": {}}
+        if not isinstance(v, dict):
+            v = {"verdict": "accept", "notes": "critic reply malformed",
                  "scores": {}}
         critiques.append({
             "section_id": d["section_id"],
@@ -418,9 +515,14 @@ def reviser(state: RunState) -> RunState:
         section = next(s for s in plan.sections if s.id == d["section_id"])
         citable = [c for c in claims
                    if c.section_id == section.id and c.status in CITABLE]
-        drafts[i] = _write_section(
-            section, citable, critic_notes=to_fix[d["section_id"]]).model_dump()
+        draft, failed = _write_section(
+            section, citable, critic_notes=to_fix[d["section_id"]])
         calls += 1
+        if failed:  # never replace real prose with the fallback listing
+            events.append(f"{section.id}: revision LLM failed — original "
+                          "draft kept")
+            continue
+        drafts[i] = draft.model_dump()
         events.append(f"{section.id}: revised once after critic review")
     return {"drafts": drafts, "llm_calls": calls, "budget_events": events}
 

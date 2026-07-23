@@ -16,10 +16,30 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 
 import httpx
 
 from scribeswarm.config import settings
+
+# Real-provider pacing: LangGraph runs section branches on threads, so an
+# unpaced fan-out bursts far past free-tier RPM limits (found in the first
+# live-Gemini shakedown, 2026-07-23). One lock + timestamp serializes calls.
+_pace_lock = threading.Lock()
+_last_real_call = 0.0
+
+
+def _pace() -> None:
+    interval = settings.llm_min_interval
+    if interval <= 0:
+        return
+    global _last_real_call
+    with _pace_lock:  # held through the sleep — queues concurrent branches
+        wait = _last_real_call + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_real_call = time.monotonic()
 
 
 def resolve_provider() -> str:
@@ -37,14 +57,15 @@ def resolve_provider() -> str:
 
 def generate(system: str, user: str) -> str:
     provider = resolve_provider()
+    if provider == "mock":
+        return _mock(system, user)
+    _pace()
     if provider == "anthropic":
         return _anthropic(system, user)
     if provider == "openai":
         return _openai(system, user)
     if provider == "gemini":
         return _gemini(system, user)
-    if provider == "mock":
-        return _mock(system, user)
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 
@@ -106,9 +127,7 @@ def _openai(system: str, user: str) -> str:
 
 
 def _gemini(system: str, user: str) -> str:
-    import time
-
-    for attempt, backoff in enumerate((15, 30, 0)):
+    for attempt, backoff in enumerate((10, 30, 60, 0)):
         resp = httpx.post(
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{settings.gemini_model}:generateContent",

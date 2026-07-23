@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     max_output_tokens: int = 2000
     request_timeout: float = 120.0
+    llm_min_interval: float = 6.5    # min seconds between REAL-provider calls;
+    # serializes the parallel fan-out under free-tier RPM limits (Gemini ~10
+    # RPM). Mock is never paced. 0 disables.
 
 
 settings = Settings()
