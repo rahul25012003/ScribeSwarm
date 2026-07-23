@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScribeSwarm</title>
+<style>
+  :root {
+    --paper: #fbfaf7; --ink: #1c1c1a; --muted: #6b6b66;
+    --line: #e4e1d8; --accent: #1f4d3a; --accent-soft: #eef2ee;
+    --warn: #8a5a00; --bad: #8a1f1f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.55 Georgia, "Times New Roman", serif;
+  }
+  .mono { font-family: Consolas, "SF Mono", monospace; font-size: 12px; }
+  header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 18px 28px 14px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 21px; letter-spacing: .2px; }
+  header .tag { color: var(--muted); font-size: 13px; font-style: italic; }
+  .layout { display: flex; min-height: calc(100vh - 62px); }
+  aside {
+    width: 300px; flex: none; border-right: 1px solid var(--line);
+    padding: 20px 18px;
+  }
+  main { flex: 1; padding: 22px 30px; max-width: 900px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  textarea, input[type=text] {
+    width: 100%; border: 1px solid var(--line); background: #fff;
+    padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical;
+  }
+  textarea:focus, input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .row { display: flex; gap: 14px; align-items: center; margin-top: 10px; }
+  .row label { margin: 0; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  button {
+    font: inherit; font-size: 14px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+    padding: 8px 18px; margin-top: 14px;
+  }
+  button.secondary { background: #fff; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .runs { margin-top: 26px; }
+  .runs h2 { font-size: 13px; color: var(--muted); font-weight: normal;
+             text-transform: uppercase; letter-spacing: 1px; margin: 0 0 8px; }
+  .run-item {
+    padding: 8px 10px; border: 1px solid transparent; cursor: pointer;
+    display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+  }
+  .run-item:hover { background: #f3f1ea; }
+  .run-item.active { border-color: var(--line); background: #fff; }
+  .status { font-size: 11px; }
+  .status.finished { color: var(--accent); }
+  .status.running, .status.starting { color: var(--warn); }
+  .status.awaiting_approval { color: var(--warn); font-weight: bold; }
+  .status.error { color: var(--bad); }
+  .tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--line);
+          margin: 18px 0 16px; }
+  .tabs a {
+    padding: 6px 2px 8px; color: var(--muted); text-decoration: none;
+    border-bottom: 2px solid transparent; font-size: 14px;
+  }
+  .tabs a.active { color: var(--ink); border-bottom-color: var(--accent); }
+  .timeline { list-style: none; margin: 0; padding: 0; }
+  .timeline li {
+    display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px dotted var(--line);
+    align-items: baseline;
+  }
+  .timeline .node { width: 150px; flex: none; color: var(--accent); }
+  .timeline .detail { color: var(--muted); font-size: 13px; }
+  .gatecard {
+    border: 1px solid var(--accent); background: var(--accent-soft);
+    padding: 16px 18px; margin: 16px 0;
+  }
+  .gatecard h3 { margin: 0 0 6px; font-size: 15px; }
+  .gatecard p { margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+  .sec { border: 1px solid var(--line); background: #fff; padding: 10px 12px; margin: 8px 0; }
+  .sec input { margin-bottom: 6px; }
+  iframe { width: 100%; height: 72vh; border: 1px solid var(--line); background: #fff; }
+  .replay td, .replay th { padding: 5px 10px; border-bottom: 1px solid var(--line);
+                           font-size: 13px; text-align: left; }
+  .replay { border-collapse: collapse; width: 100%; }
+  .empty { color: var(--muted); font-style: italic; margin-top: 30px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ScribeSwarm</h1>
+  <span class="tag">multi-agent research &amp; report generation — plan, research, fact-check, write</span>
+</header>
+
+<div class="layout">
+  <aside>
+    <label for="q">Research question</label>
+    <textarea id="q" rows="4" placeholder="Compare the EV battery supply chain strategies of India, China, and the EU"></textarea>
+    <div class="row mono">
+      <label><input type="checkbox" id="hitl" checked> pause for plan approval</label>
+    </div>
+    <div class="row mono">
+      <label><input type="checkbox" id="verify" checked> adversarial fact-check</label>
+    </div>
+    <button id="start">Start run</button>
+
+    <div class="runs">
+      <h2>Runs</h2>
+      <div id="runlist"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="content"><p class="empty">Start a run, or pick one from the left.</p></div>
+  </main>
+</div>
+
+<script>
+const $ = (sel, el=document) => el.querySelector(sel);
+let current = null;      // selected thread id
+let es = null;           // active EventSource
+let tab = 'timeline';
+let events = [];
+
+const NODE_LABELS = {
+  planner: 'Planner', research_section: 'Researcher', verify_gate: 'Verify gate',
+  fact_check_section: 'Fact-checker', writer: 'Writer', analyst: 'Analyst',
+  critic: 'Critic', reviser: 'Reviser', assemble: 'Assembler',
+  __gate__: 'Approval gate', __approved__: 'Human', __done__: 'Done',
+  __error__: 'Error', __stream_end__: ''
+};
+
+async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(await r.text()); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                             body: JSON.stringify(body||{})});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function refreshRuns() {
+  const runs = await jget('/runs');
+  $('#runlist').innerHTML = runs.map(r =>
+    `<div class="run-item mono ${r.thread_id===current?'active':''}" data-tid="${r.thread_id}">
+       <span>${r.thread_id.replace('run_','')}</span>
+       <span class="status ${r.status}">${r.status.replace('_',' ')}</span>
+     </div>`).join('') || '<p class="empty mono">none yet</p>';
+  document.querySelectorAll('.run-item').forEach(el =>
+    el.onclick = () => select(el.dataset.tid));
+}
+
+$('#start').onclick = async () => {
+  const question = $('#q').value.trim();
+  if (!question) return;
+  $('#start').disabled = true;
+  try {
+    const res = await jpost('/runs', {question, hitl: $('#hitl').checked,
+                                      verify: $('#verify').checked});
+    await refreshRuns();
+    select(res.thread_id);
+  } finally { $('#start').disabled = false; }
+};
+
+function select(tid) {
+  current = tid; tab = 'timeline'; events = [];
+  if (es) { es.close(); es = null; }
+  render();
+  listen(tid);
+  refreshRuns();
+}
+
+function listen(tid) {
+  es = new EventSource(`/runs/${tid}/events`);
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.node === '__stream_end__') { es.close(); es = null; renderAsync(); return; }
+    events.push(e);
+    renderAsync();
+  };
+  es.onerror = () => { if (es) { es.close(); es = null; } renderAsync(); };
+}
+
+let renderQueued = false;
+function renderAsync() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; render(); });
+}
+
+async function render() {
+  if (!current) return;
+  let st = null;
+  try { st = await jget(`/runs/${current}/state`); } catch { return; }
+  const el = $('#content');
+  const tabs = `
+    <div class="mono" style="color:var(--muted)">
+      ${st.thread_id} · <span class="status ${st.status}">${st.status.replace('_',' ')}</span>
+      · llm ${st.llm_calls} · tools ${st.tool_calls} · claims ${st.claims.length}
+    </div>
+    <h2 style="margin:6px 0 0; font-size:18px">${st.question || ''}</h2>
+    <div class="tabs">
+      ${['timeline','report','replay'].map(t =>
+        `<a href="#" data-tab="${t}" class="${tab===t?'active':''}">${t[0].toUpperCase()+t.slice(1)}</a>`).join('')}
+    </div>
+    <div id="tabbody"></div>`;
+  el.innerHTML = tabs;
+  document.querySelectorAll('[data-tab]').forEach(a =>
+    a.onclick = (ev) => { ev.preventDefault(); tab = a.dataset.tab; render(); });
+
+  const body = $('#tabbody');
+  if (tab === 'report') {
+    body.innerHTML = st.has_report
+      ? `<iframe src="/runs/${current}/report"></iframe>
+         <p class="mono"><a href="/runs/${current}/report.md">download markdown</a></p>`
+      : '<p class="empty">No report yet — the run has not finished.</p>';
+    return;
+  }
+  if (tab === 'replay') {
+    let hist = [];
+    try { hist = await jget(`/runs/${current}/history`); } catch {}
+    body.innerHTML = hist.length ? `
+      <table class="replay mono"><tr>
+        <th>step</th><th>nodes</th><th>next</th><th>llm</th><th>tools</th>
+        <th>claims</th><th>report</th></tr>
+      ${hist.slice().reverse().map(h => `<tr>
+        <td>${h.step}</td><td>${h.nodes.join(', ') || '—'}</td>
+        <td>${h.next.join(', ') || '—'}</td><td>${h.llm_calls}</td>
+        <td>${h.tool_calls}</td><td>${h.n_claims}</td>
+        <td>${h.has_report ? 'yes' : ''}</td></tr>`).join('')}
+      </table>` : '<p class="empty">No checkpoints recorded.</p>';
+    return;
+  }
+
+  // timeline tab
+  let html = '';
+  if (st.status === 'awaiting_approval' && st.plan) {
+    html += planCard(st.plan);
+  }
+  html += `<ul class="timeline">` + events.map(e => {
+    const label = NODE_LABELS[e.node] ?? e.node;
+    if (!label) return '';
+    const bits = [];
+    if (e.sections) bits.push(`${e.sections} sections`);
+    if (e.claims !== undefined && e.node !== '__done__') bits.push(`${e.claims} claims`);
+    if (e.verdicts) bits.push(e.verdicts.join(', ') || 'no verdicts');
+    if (e.drafts) bits.push(`${e.drafts} drafts${e.revised ? `, ${e.revised} revised` : ''}`);
+    if (e.charts !== undefined) bits.push(`${e.charts} chart(s)`);
+    if (e.revise_requests) bits.push(`${e.revise_requests} revision request(s)`);
+    if (e.llm_calls) bits.push(`llm +${e.llm_calls}`);
+    if (e.tool_calls) bits.push(`tools +${e.tool_calls}`);
+    if (e.message) bits.push(e.message);
+    if (e.notes) bits.push(e.notes.join(' · '));
+    if (e.node === '__done__') bits.push(`total llm ${e.llm_calls ?? ''}, claims ${e.claims ?? ''}`);
+    return `<li class="mono"><span class="node">${label}</span>
+            <span class="detail">${bits.join(' · ')}</span></li>`;
+  }).join('') + '</ul>';
+  if (!events.length) html += '<p class="empty">Waiting for events…</p>';
+  body.innerHTML = html;
+  wirePlanCard(st);
+}
+
+function planCard(plan) {
+  return `<div class="gatecard">
+    <h3>Research plan — awaiting your approval</h3>
+    <p>Edit headings and sub-questions if you want to steer the run, then approve.
+       The graph is checkpointed: nothing executes until you decide.</p>
+    <label>Title</label>
+    <input type="text" id="plan-title" value="${esc(plan.title)}">
+    ${plan.sections.map((s, i) => `
+      <div class="sec" data-idx="${i}">
+        <input type="text" class="sec-heading" value="${esc(s.heading)}">
+        ${s.sub_questions.map(q =>
+          `<input type="text" class="sec-q" value="${esc(q)}">`).join('')}
+      </div>`).join('')}
+    <button id="approve">Approve &amp; continue</button>
+    <button id="approve-asis" class="secondary">Approve without edits</button>
+  </div>`;
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function wirePlanCard(st) {
+  const btn = $('#approve'), asis = $('#approve-asis');
+  if (!btn) return;
+  asis.onclick = async () => { asis.disabled = btn.disabled = true;
+    await jpost(`/runs/${current}/approve`, {}); resumeListen(); };
+  btn.onclick = async () => {
+    btn.disabled = asis.disabled = true;
+    const plan = JSON.parse(JSON.stringify(st.plan));
+    plan.title = $('#plan-title').value;
+    document.querySelectorAll('.sec').forEach(sec => {
+      const i = +sec.dataset.idx;
+      plan.sections[i].heading = $('.sec-heading', sec).value;
+      plan.sections[i].sub_questions =
+        [...sec.querySelectorAll('.sec-q')].map(inp => inp.value).filter(Boolean);
+    });
+    await jpost(`/runs/${current}/approve`, {plan});
+    resumeListen();
+  };
+}
+
+function resumeListen() {
+  if (es) { es.close(); es = null; }
+  listen(current);
+  refreshRuns();
+}
+
+refreshRuns();
+setInterval(refreshRuns, 5000);
+</script>
+</body>
+</html>

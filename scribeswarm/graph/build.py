@@ -60,7 +60,7 @@ def _fan_out_verify(state: RunState):
     ]
 
 
-def build_graph(checkpointer: SqliteSaver):
+def build_graph(checkpointer: SqliteSaver, interrupt_after_plan: bool = False):
     builder = StateGraph(RunState)
     builder.add_node("planner", nodes.planner)
     builder.add_node("research_section", nodes.research_section)
@@ -82,7 +82,10 @@ def build_graph(checkpointer: SqliteSaver):
     builder.add_edge("critic", "reviser")
     builder.add_edge("reviser", "assemble")
     builder.add_edge("assemble", END)
-    return builder.compile(checkpointer=checkpointer)
+    return builder.compile(
+        checkpointer=checkpointer,
+        interrupt_after=["planner"] if interrupt_after_plan else None,
+    )
 
 
 def open_checkpointer(db_path: str | Path | None = None) -> SqliteSaver:
@@ -123,3 +126,67 @@ def run(question: str, thread_id: str, db_path: str | Path | None = None,
 def get_state(thread_id: str, db_path: str | Path | None = None):
     graph = build_graph(open_checkpointer(db_path))
     return graph.get_state({"configurable": {"thread_id": thread_id}})
+
+
+# --- Phase 5: streaming execution, HITL plan approval, history/replay ------
+
+def stream_run(question: str, thread_id: str,
+               db_path: str | Path | None = None, budget: dict | None = None,
+               hitl: bool = False):
+    """Start a run, yielding one {node: update} dict per completed node.
+    With hitl=True execution pauses after the planner (plan approval gate)."""
+    graph = build_graph(open_checkpointer(db_path), interrupt_after_plan=hitl)
+    config = {"configurable": {"thread_id": thread_id}}
+    payload: RunState = {"question": question,
+                         "budget": budget or default_budget()}
+    yield from graph.stream(payload, config=config, stream_mode="updates")
+
+
+def stream_resume(thread_id: str, db_path: str | Path | None = None,
+                  plan: dict | None = None):
+    """Resume an interrupted (or killed) run; optionally with an edited plan
+    applied first — the human-in-the-loop steering hook."""
+    graph = build_graph(open_checkpointer(db_path))
+    config = {"configurable": {"thread_id": thread_id}}
+    if plan is not None:
+        ResearchPlan.model_validate(plan)          # reject malformed edits
+        graph.update_state(config, {"plan": plan})
+    yield from graph.stream(None, config=config, stream_mode="updates")
+
+
+def get_history(thread_id: str, db_path: str | Path | None = None) -> list[dict]:
+    """Checkpoint history for the replay view — newest first."""
+    graph = build_graph(open_checkpointer(db_path))
+    config = {"configurable": {"thread_id": thread_id}}
+    steps = []
+    for snap in graph.get_state_history(config):
+        meta = snap.metadata or {}
+        writes = meta.get("writes") or {}
+        steps.append({
+            "checkpoint_id": (snap.config.get("configurable") or {}).get(
+                "checkpoint_id", ""),
+            "step": meta.get("step", -1),
+            "nodes": sorted(writes.keys()),
+            "next": list(snap.next or ()),
+            "llm_calls": snap.values.get("llm_calls", 0),
+            "tool_calls": snap.values.get("tool_calls", 0),
+            "n_claims": len(snap.values.get("claims", [])),
+            "has_report": bool(snap.values.get("report")),
+            "created_at": snap.created_at or "",
+        })
+    return steps
+
+
+def list_threads(db_path: str | Path | None = None) -> list[str]:
+    path = Path(db_path or settings.checkpoint_db)
+    if not path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(path))
+        rows = conn.execute(
+            "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except sqlite3.Error:
+        return []

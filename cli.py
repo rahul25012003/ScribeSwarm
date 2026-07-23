@@ -50,17 +50,9 @@ def run(question: str,
     state = run_graph(question, thread_id, budget=budget)
     elapsed = time.perf_counter() - t0
 
-    run_dir = _runs_dir() / thread_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    report_md = state.get("report", "")
-    (run_dir / "report.md").write_text(report_md, encoding="utf-8")
+    from scribeswarm.output import write_run_outputs
 
-    from scribeswarm.charts import render_chart, render_html
-
-    for spec in state.get("charts", []):
-        render_chart(spec, run_dir / "charts" / f"{spec['id']}.png")
-    title = (state.get("plan") or {}).get("title", "ScribeSwarm report")
-    render_html(report_md, run_dir / "charts", run_dir / "report.html", title)
+    run_dir = write_run_outputs(state, thread_id)
 
     typer.echo(
         f"done in {elapsed:.1f}s — provider={state.get('provider')} "
@@ -90,6 +82,13 @@ def state(thread: str):
     typer.echo(f"plan: {'yes' if values.get('plan') else 'no'} · "
                f"claims: {len(values.get('claims', []))} · "
                f"report: {'yes' if values.get('report') else 'no'}")
+
+
+@app.command()
+def serve(port: int = typer.Option(8000), host: str = typer.Option("127.0.0.1")):
+    import uvicorn
+
+    uvicorn.run("scribeswarm.api:app", host=host, port=port)
 
 
 @app.command()
