@@ -13,3 +13,6 @@ uvicorn>=0.51
 ddgs>=9.14
 trafilatura>=2.1
 matplotlib>=3.11
+markdown>=3.10      # report.html rendering (scribeswarm/charts.py)
+pymupdf>=1.28       # PDF sources in the fetch tool
+# Optional: anthropic, only when the Anthropic LLM provider is selected
