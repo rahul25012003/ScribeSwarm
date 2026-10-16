@@ -6,3 +6,10 @@ pydantic-settings>=2.14
 typer>=0.27
 httpx>=0.28
 pytest>=9
+# Web UI + server (scribeswarm/app, cli.py serve)
+fastapi>=0.139
+uvicorn>=0.51
+# Research tools (scribeswarm/tools) and spec-driven charts (scribeswarm/charts.py)
+ddgs>=9.14
+trafilatura>=2.1
+matplotlib>=3.11
