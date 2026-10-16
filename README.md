@@ -6,8 +6,6 @@ real web tools, **adversarially fact-checks its own claims**, writes cited
 prose, survives a critic's rubric review — and produces a report in which
 **fabricating a citation is structurally impossible**.
 
-> Mission 2030 · Project 5 (build order #2). Plan and tracker:
-> [`../PROJECT_MASTER_PLAN.md`](../PROJECT_MASTER_PLAN.md)
 
 ## Architecture (LangGraph state machine)
 
